@@ -1,8 +1,9 @@
 from flask import Flask, request
 import sqlite3
 import os
-import africastalking
 import html
+import africastalking
+
 app = Flask(__name__)
 
 africastalking.initialize("sandbox", os.environ["AT_API_KEY"])
@@ -12,8 +13,10 @@ DB_FILE = "mkononi.db"
 
 AIRTIME_AMOUNTS = {"1": 10, "2": 20, "3": 50, "4": 100}
 NETWORK_ISSUES = {"1": "No Network", "2": "Slow Internet", "3": "Calls Dropping"}
+SUPPORT_TOPICS = {"1": "Billing", "2": "Network", "3": "Account", "4": "Other"}
 
 
+# ---------------- Database ----------------
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
@@ -25,6 +28,14 @@ def init_db():
                 detail TEXT,
                 phone TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS balances (
+                phone TEXT PRIMARY KEY,
+                amount INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -42,6 +53,24 @@ def save_request(prefix, kind, detail, phone):
     return ref
 
 
+def add_balance(phone, amount):
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            "INSERT INTO balances (phone, amount) VALUES (?, ?) "
+            "ON CONFLICT(phone) DO UPDATE SET amount = amount + excluded.amount",
+            (phone, amount),
+        )
+
+
+def get_balance(phone):
+    with sqlite3.connect(DB_FILE) as conn:
+        row = conn.execute(
+            "SELECT amount FROM balances WHERE phone = ?", (phone,)
+        ).fetchone()
+    return row[0] if row else 0
+
+
+# ---------------- SMS ----------------
 def send_sms(phone, message):
     try:
         return sms.send(message, [phone])
@@ -49,6 +78,7 @@ def send_sms(phone, message):
         print("SMS failed:", e)
 
 
+# ---------------- USSD ----------------
 @app.route("/ussd", methods=["GET", "POST"])
 def ussd():
     text = request.form.get("text", "")
@@ -96,10 +126,10 @@ def ussd():
         if len(parts) == 1:
             response = (
                 "CON Select amount\n\n"
-                "1. KES 10\n"
-                "2. KES 20\n"
-                "3. KES 50\n"
-                "4. KES 100"
+                "1.sh10=50mins,1hrs\n"
+                "2.sh20=45mins,3hrs\n"
+                "3.sh50=120mins,24hrs\n"
+                "4.sh100=unlimited,24hrs"
             )
         elif len(parts) == 2 and parts[1] in AIRTIME_AMOUNTS:
             amount = AIRTIME_AMOUNTS[parts[1]]
@@ -112,14 +142,17 @@ def ussd():
             amount = AIRTIME_AMOUNTS[parts[1]]
             if parts[2] == "1":
                 ref = save_request("AT", "airtime", f"KES {amount}", phone)
+                add_balance(phone, amount)
+                balance = get_balance(phone)
                 send_sms(
                     phone,
-                    f"Mkononi Connect: airtime request of KES {amount} received. "
-                    f"Ref: {ref}.",
+                    f"Mkononi Connect: KES {amount} airtime received. "
+                    f"Ref: {ref}. New balance: KES {balance}.",
                 )
                 response = (
-                    f"END Request for KES {amount} airtime received.\n"
+                    f"END KES {amount} airtime added.\n"
                     f"Ref: {ref}\n"
+                    f"New balance: KES {balance}\n"
                     "A receipt SMS has been sent."
                 )
             elif parts[2] == "2":
@@ -129,23 +162,58 @@ def ussd():
         else:
             response = "END Invalid choice. Please try again."
 
-    # ---- Placeholders ----
+    # ---- 3. Check Balance ----
     elif parts[0] == "3":
-        response = "END Balance check is coming soon."
+        if len(parts) == 1:
+            response = f"END Your balance is KES {get_balance(phone)}."
+        else:
+            response = "END Invalid choice. Please try again."
 
+    # ---- 4. Report Fraud ----
     elif parts[0] == "4":
         ticket = save_request("MC", "fraud_report", "", phone)
         send_sms(phone, f"Mkononi Connect: fraud report received. Ticket: {ticket}.")
         response = f"END Fraud report received.\nTicket: {ticket}"
 
+    # ---- 5. Support ----
     elif parts[0] == "5":
-        response = "END For support, please contact our team."
+        if len(parts) == 1:
+            response = (
+                "CON Support\n\n"
+                "1. Billing\n"
+                "2. Network\n"
+                "3. Account\n"
+                "4. Other"
+            )
+        elif len(parts) == 2 and parts[1] in SUPPORT_TOPICS:
+            response = "CON Describe your issue briefly:"
+        elif len(parts) >= 3 and parts[1] in SUPPORT_TOPICS:
+            topic = SUPPORT_TOPICS[parts[1]]
+            message = "*".join(parts[2:]).strip()[:160]
+            if not message:
+                response = "END No message received. Please try again."
+            else:
+                ticket = save_request("SP", "support", f"{topic}: {message}", phone)
+                send_sms(
+                    phone,
+                    f"Mkononi Connect: support request ({topic}) received. "
+                    f"Ticket: {ticket}. Our team will contact you.",
+                )
+                response = (
+                    "END Your message has been received.\n"
+                    f"Ticket: {ticket}\n"
+                    "A confirmation SMS has been sent."
+                )
+        else:
+            response = "END Invalid choice. Please try again."
 
     else:
         response = "END Invalid choice. Please try again."
 
     return response, 200, {"Content-Type": "text/plain"}
 
+
+# ---------------- Admin dashboard ----------------
 ADMIN_CSS = """
 :root {
   --black:#0d0d0d; --charcoal:#1a1a1a; --grey:#2b2b2b; --line:#3a3a3a;
@@ -196,13 +264,18 @@ def admin():
             conn.execute("SELECT kind, COUNT(*) FROM requests GROUP BY kind").fetchall()
         )
         summary = conn.execute(
-            "SELECT kind, COALESCE(NULLIF(detail, ''), '-'), COUNT(*) "
-            "FROM requests GROUP BY kind, detail ORDER BY COUNT(*) DESC"
+            "SELECT kind, "
+            "CASE WHEN kind = 'support' THEN substr(detail, 1, instr(detail, ':') - 1) "
+            "ELSE COALESCE(NULLIF(detail, ''), '-') END AS d, COUNT(*) "
+            "FROM requests GROUP BY kind, d ORDER BY COUNT(*) DESC"
         ).fetchall()
         recent = conn.execute(
             "SELECT ref, kind, detail, phone, created_at "
             "FROM requests ORDER BY id DESC LIMIT 20"
         ).fetchall()
+        balance_total = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balances"
+        ).fetchone()[0]
 
     def mask(p):
         return p[:4] + "****" + p[-3:] if p and len(p) > 7 else "****"
@@ -215,12 +288,14 @@ def admin():
         card(total, "Total requests")
         + card(kinds.get("network_issue", 0), "Network issues")
         + card(kinds.get("airtime", 0), "Airtime requests")
+        + card(kinds.get("support", 0), "Support tickets")
         + card(kinds.get("fraud_report", 0), "Fraud reports")
+        + card(f"KES {balance_total}", "Total balances")
     )
 
     summary_rows = "".join(
         f'<tr><td><span class="badge">{html.escape(k)}</span></td>'
-        f"<td>{html.escape(d)}</td><td>{n}</td></tr>"
+        f"<td>{html.escape(str(d))}</td><td>{n}</td></tr>"
         for k, d, n in summary
     ) or '<tr><td colspan="3" class="empty">No data yet</td></tr>'
 
@@ -259,6 +334,7 @@ def admin():
   </table></div>
 </main>
 </body></html>"""
+
 
 init_db()
 
