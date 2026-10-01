@@ -1,5 +1,5 @@
 from flask import Flask, request
-import random
+import sqlite3
 import os
 import africastalking
 
@@ -8,8 +8,38 @@ app = Flask(__name__)
 africastalking.initialize("sandbox", os.environ["AT_API_KEY"])
 sms = africastalking.SMS
 
+DB_FILE = "mkononi.db"
+
 AIRTIME_AMOUNTS = {"1": 10, "2": 20, "3": 50, "4": 100}
 NETWORK_ISSUES = {"1": "No Network", "2": "Slow Internet", "3": "Calls Dropping"}
+
+
+def init_db():
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ref TEXT,
+                kind TEXT NOT NULL,
+                detail TEXT,
+                phone TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+def save_request(prefix, kind, detail, phone):
+    """Save a request and return its unique reference, e.g. MC1001."""
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.execute(
+            "INSERT INTO requests (kind, detail, phone) VALUES (?, ?, ?)",
+            (kind, detail, phone),
+        )
+        ref = f"{prefix}{1000 + cur.lastrowid}"
+        conn.execute("UPDATE requests SET ref = ? WHERE id = ?", (ref, cur.lastrowid))
+    return ref
 
 
 def send_sms(phone, message):
@@ -17,10 +47,6 @@ def send_sms(phone, message):
         return sms.send(message, [phone])
     except Exception as e:
         print("SMS failed:", e)
-
-
-def make_ticket():
-    return "MC" + str(random.randint(1000, 9999))
 
 
 @app.route("/ussd", methods=["GET", "POST"])
@@ -50,11 +76,12 @@ def ussd():
                 "3. Calls Dropping"
             )
         elif len(parts) == 2 and parts[1] in NETWORK_ISSUES:
-            ticket = make_ticket()
+            issue = NETWORK_ISSUES[parts[1]]
+            ticket = save_request("MC", "network_issue", issue, phone)
             send_sms(
                 phone,
-                f"Mkononi Connect: your report ({NETWORK_ISSUES[parts[1]]}) "
-                f"has been received. Ticket: {ticket}. We will follow up soon.",
+                f"Mkononi Connect: your report ({issue}) has been received. "
+                f"Ticket: {ticket}. We will follow up soon.",
             )
             response = (
                 "END Your network problem has been reported.\n"
@@ -84,7 +111,7 @@ def ussd():
         elif len(parts) == 3 and parts[1] in AIRTIME_AMOUNTS:
             amount = AIRTIME_AMOUNTS[parts[1]]
             if parts[2] == "1":
-                ref = "AT" + str(random.randint(100000, 999999))
+                ref = save_request("AT", "airtime", f"KES {amount}", phone)
                 send_sms(
                     phone,
                     f"Mkononi Connect: airtime request of KES {amount} received. "
@@ -107,7 +134,7 @@ def ussd():
         response = "END Balance check is coming soon."
 
     elif parts[0] == "4":
-        ticket = make_ticket()
+        ticket = save_request("MC", "fraud_report", "", phone)
         send_sms(phone, f"Mkononi Connect: fraud report received. Ticket: {ticket}.")
         response = f"END Fraud report received.\nTicket: {ticket}"
 
@@ -119,6 +146,8 @@ def ussd():
 
     return response, 200, {"Content-Type": "text/plain"}
 
+
+init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
