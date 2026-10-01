@@ -2,7 +2,7 @@ from flask import Flask, request
 import sqlite3
 import os
 import africastalking
-
+import html
 app = Flask(__name__)
 
 africastalking.initialize("sandbox", os.environ["AT_API_KEY"])
@@ -146,6 +146,53 @@ def ussd():
 
     return response, 200, {"Content-Type": "text/plain"}
 
+@app.route("/admin")
+def admin():
+    key = os.environ.get("ADMIN_KEY")
+    if not key or request.args.get("key") != key:
+        return "Not authorised", 403
+
+    with sqlite3.connect(DB_FILE) as conn:
+        total = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+        summary = conn.execute(
+            "SELECT kind, COALESCE(NULLIF(detail, ''), '-'), COUNT(*) "
+            "FROM requests GROUP BY kind, detail ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        recent = conn.execute(
+            "SELECT ref, kind, detail, phone, created_at "
+            "FROM requests ORDER BY id DESC LIMIT 20"
+        ).fetchall()
+
+    def mask(p):
+        return p[:4] + "****" + p[-3:] if p and len(p) > 7 else "****"
+
+    summary_rows = "".join(
+        f"<tr><td>{html.escape(k)}</td><td>{html.escape(d)}</td><td>{n}</td></tr>"
+        for k, d, n in summary
+    )
+    recent_rows = "".join(
+        f"<tr><td>{html.escape(str(r))}</td><td>{html.escape(k)}</td>"
+        f"<td>{html.escape(d or '-')}</td><td>{html.escape(mask(p))}</td>"
+        f"<td>{html.escape(str(t))}</td></tr>"
+        for r, k, d, p, t in recent
+    )
+
+    return f"""
+    <html><head><title>Mkononi Connect Admin</title>
+    <style>
+      body {{ font-family: sans-serif; margin: 2rem; }}
+      table {{ border-collapse: collapse; margin-bottom: 2rem; }}
+      th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: left; }}
+      th {{ background: #f0f0f0; }}
+    </style></head><body>
+      <h1>Mkononi Connect</h1>
+      <h2>Total requests: {total}</h2>
+      <h3>By type</h3>
+      <table><tr><th>Kind</th><th>Detail</th><th>Count</th></tr>{summary_rows}</table>
+      <h3>Latest 20</h3>
+      <table><tr><th>Ref</th><th>Kind</th><th>Detail</th><th>Phone</th><th>Time</th></tr>{recent_rows}</table>
+    </body></html>
+    """
 
 init_db()
 
