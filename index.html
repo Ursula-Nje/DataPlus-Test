@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mkononi Connect</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<header>
+    <div class="logo">Mkononi<span>Connect</span></div>
+    <div class="tagline">Telecom services, accessible to everyone.</div>
+</header>
+
+<main>
+
+    <section class="hero">
+        <div>
+            <p class="badge">SMART TELECOM SUPPORT</p>
+            <h1>Essential services.<br><span>Right at your fingertips.</span></h1>
+            <p class="hero-text">
+                Mkononi Connect brings essential telecom services to users
+                through simple USSD and SMS interactions — even without mobile data.
+            </p>
+        </div>
+
+        <div class="phone">
+            <div class="phone-top">Mkononi Connect</div>
+
+            <div id="screen" class="phone-screen">
+                <h3>Welcome</h3>
+                <p>Enter your phone number:</p>
+
+                <input id="phoneNumber"
+                       type="tel"
+                       placeholder="07XXXXXXXX"
+                       maxlength="10">
+
+                <button onclick="startSession()">Continue</button>
+            </div>
+        </div>
+    </section>
+
+    <section class="features">
+
+        <div class="feature">
+            <div class="icon">📡</div>
+            <h3>USSD Access</h3>
+            <p>Access services without requiring mobile data.</p>
+        </div>
+
+        <div class="feature">
+            <div class="icon">💬</div>
+            <h3>SMS Updates</h3>
+            <p>Receive important confirmations and service updates.</p>
+        </div>
+
+        <div class="feature">
+            <div class="icon">🌍</div>
+            <h3>Inclusive</h3>
+            <p>Designed for users with basic phones and limited connectivity.</p>
+        </div>
+
+    </section>
+
+    <section class="dashboard">
+
+        <div class="section-title">
+            <p class="badge">SERVICE MONITOR</p>
+            <h2>Live platform overview</h2>
+        </div>
+
+        <div class="stats">
+            <div>
+                <strong id="users">1,248</strong>
+                <span>Active users</span>
+            </div>
+
+            <div>
+                <strong id="sessions">326</strong>
+                <span>USSD sessions</span>
+            </div>
+
+            <div>
+                <strong id="sms">892</strong>
+                <span>SMS notifications</span>
+            </div>
+
+            <div>
+                <strong id="transactions">217</strong>
+                <span>Transactions</span>
+            </div>
+        </div>
+
+    </section>
+
+</main>
+
+<footer>
+    <p>© 2026 Mkononi Connect</p>
+    <p>Built for accessible digital connectivity.</p>
+</footer>
+
+<script src="script.js"></script>
+
+</body>
+</html>
