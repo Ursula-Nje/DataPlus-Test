@@ -146,6 +146,44 @@ def ussd():
 
     return response, 200, {"Content-Type": "text/plain"}
 
+ADMIN_CSS = """
+:root {
+  --black:#0d0d0d; --charcoal:#1a1a1a; --grey:#2b2b2b; --line:#3a3a3a;
+  --muted:#9a9a9a; --beige:#d9c8a9; --beige-soft:#efe4cf;
+}
+* { box-sizing: border-box; }
+body { margin:0; font-family:"Segoe UI", system-ui, sans-serif;
+       background:var(--black); color:var(--beige-soft); }
+header { padding:28px 40px; border-bottom:2px solid var(--beige);
+         background:linear-gradient(135deg, var(--charcoal), var(--grey)); }
+header h1 { margin:0; font-size:1.6rem; letter-spacing:.5px; color:var(--beige); }
+header p { margin:4px 0 0; color:var(--muted); font-size:.9rem; }
+main { padding:32px 40px; max-width:1100px; margin:0 auto; }
+.cards { display:grid; gap:16px; margin-bottom:32px;
+         grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); }
+.card { background:var(--charcoal); border:1px solid var(--line);
+        border-left:4px solid var(--beige); border-radius:10px;
+        padding:18px 20px; transition:transform .15s, border-color .15s; }
+.card:hover { transform:translateY(-3px); border-color:var(--beige); }
+.card .num { font-size:2.2rem; font-weight:700; color:var(--beige); }
+.card .label { color:var(--muted); font-size:.8rem;
+               text-transform:uppercase; letter-spacing:1px; }
+h2 { font-size:1rem; text-transform:uppercase; letter-spacing:1.5px;
+     color:var(--beige); margin:32px 0 12px; }
+.panel { background:var(--charcoal); border:1px solid var(--line);
+         border-radius:10px; overflow-x:auto; }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; padding:12px 16px; background:var(--grey); color:var(--beige);
+     font-size:.75rem; text-transform:uppercase; letter-spacing:1px; }
+td { padding:12px 16px; border-top:1px solid var(--line); font-size:.9rem; }
+tbody tr:hover { background:var(--grey); }
+.badge { display:inline-block; padding:2px 10px; border-radius:999px;
+         font-size:.75rem; background:var(--grey);
+         border:1px solid var(--beige); color:var(--beige); }
+.empty { padding:24px; color:var(--muted); text-align:center; }
+"""
+
+
 @app.route("/admin")
 def admin():
     key = os.environ.get("ADMIN_KEY")
@@ -154,6 +192,9 @@ def admin():
 
     with sqlite3.connect(DB_FILE) as conn:
         total = conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+        kinds = dict(
+            conn.execute("SELECT kind, COUNT(*) FROM requests GROUP BY kind").fetchall()
+        )
         summary = conn.execute(
             "SELECT kind, COALESCE(NULLIF(detail, ''), '-'), COUNT(*) "
             "FROM requests GROUP BY kind, detail ORDER BY COUNT(*) DESC"
@@ -166,33 +207,58 @@ def admin():
     def mask(p):
         return p[:4] + "****" + p[-3:] if p and len(p) > 7 else "****"
 
-    summary_rows = "".join(
-        f"<tr><td>{html.escape(k)}</td><td>{html.escape(d)}</td><td>{n}</td></tr>"
-        for k, d, n in summary
+    def card(num, label):
+        return (f'<div class="card"><div class="num">{num}</div>'
+                f'<div class="label">{label}</div></div>')
+
+    cards = (
+        card(total, "Total requests")
+        + card(kinds.get("network_issue", 0), "Network issues")
+        + card(kinds.get("airtime", 0), "Airtime requests")
+        + card(kinds.get("fraud_report", 0), "Fraud reports")
     )
+
+    summary_rows = "".join(
+        f'<tr><td><span class="badge">{html.escape(k)}</span></td>'
+        f"<td>{html.escape(d)}</td><td>{n}</td></tr>"
+        for k, d, n in summary
+    ) or '<tr><td colspan="3" class="empty">No data yet</td></tr>'
+
     recent_rows = "".join(
-        f"<tr><td>{html.escape(str(r))}</td><td>{html.escape(k)}</td>"
+        f"<tr><td>{html.escape(str(r))}</td>"
+        f'<td><span class="badge">{html.escape(k)}</span></td>'
         f"<td>{html.escape(d or '-')}</td><td>{html.escape(mask(p))}</td>"
         f"<td>{html.escape(str(t))}</td></tr>"
         for r, k, d, p, t in recent
-    )
+    ) or '<tr><td colspan="5" class="empty">No requests yet</td></tr>'
 
-    return f"""
-    <html><head><title>Mkononi Connect Admin</title>
-    <style>
-      body {{ font-family: sans-serif; margin: 2rem; }}
-      table {{ border-collapse: collapse; margin-bottom: 2rem; }}
-      th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: left; }}
-      th {{ background: #f0f0f0; }}
-    </style></head><body>
-      <h1>Mkononi Connect</h1>
-      <h2>Total requests: {total}</h2>
-      <h3>By type</h3>
-      <table><tr><th>Kind</th><th>Detail</th><th>Count</th></tr>{summary_rows}</table>
-      <h3>Latest 20</h3>
-      <table><tr><th>Ref</th><th>Kind</th><th>Detail</th><th>Phone</th><th>Time</th></tr>{recent_rows}</table>
-    </body></html>
-    """
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mkononi Connect Admin</title>
+<style>{ADMIN_CSS}</style>
+</head><body>
+<header>
+  <h1>Mkononi Connect</h1>
+  <p>Admin dashboard</p>
+</header>
+<main>
+  <div class="cards">{cards}</div>
+
+  <h2>By type</h2>
+  <div class="panel"><table>
+    <thead><tr><th>Kind</th><th>Detail</th><th>Count</th></tr></thead>
+    <tbody>{summary_rows}</tbody>
+  </table></div>
+
+  <h2>Latest 20 requests</h2>
+  <div class="panel"><table>
+    <thead><tr><th>Ref</th><th>Kind</th><th>Detail</th><th>Phone</th><th>Time</th></tr></thead>
+    <tbody>{recent_rows}</tbody>
+  </table></div>
+</main>
+</body></html>"""
 
 init_db()
 
