@@ -3,6 +3,7 @@ import sqlite3
 import os
 import html
 import africastalking
+import datetime
 
 app = Flask(__name__)
 
@@ -249,6 +250,25 @@ tbody tr:hover { background:var(--grey); }
          font-size:.75rem; background:var(--grey);
          border:1px solid var(--beige); color:var(--beige); }
 .empty { padding:24px; color:var(--muted); text-align:center; }
+
+.charts { display:grid; gap:24px; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); }
+.vchart { display:flex; align-items:stretch; gap:12px; height:220px; padding:28px 20px 12px; }
+.col { flex:1; display:flex; flex-direction:column; }
+.barwrap { flex:1; display:flex; align-items:flex-end; }
+.barv { width:100%; background:var(--beige); border-radius:6px 6px 0 0;
+        min-height:3px; position:relative; transition:background .15s; }
+.barv:hover { background:var(--beige-soft); }
+.barv span { position:absolute; top:-20px; width:100%; text-align:center;
+             font-size:.75rem; color:var(--beige-soft); }
+.xl { text-align:center; color:var(--muted); font-size:.75rem; margin-top:8px; }
+.hchart { padding:20px; }
+.hrow { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+.hrow:last-child { margin-bottom:0; }
+.hl { width:120px; font-size:.85rem; color:var(--muted); }
+.htrack { flex:1; background:var(--grey); border-radius:999px; height:12px; overflow:hidden; }
+.hfill { height:100%; background:var(--beige); border-radius:999px; }
+.hn { width:32px; text-align:right; font-weight:600; color:var(--beige); }
+
 """
 
 
@@ -276,6 +296,37 @@ def admin():
         balance_total = conn.execute(
             "SELECT COALESCE(SUM(amount), 0) FROM balances"
         ).fetchone()[0]
+        daily = dict(
+            conn.execute(
+                "SELECT date(created_at), COUNT(*) FROM requests "
+                "WHERE date(created_at) >= date('now', '-6 days') "
+                "GROUP BY date(created_at)"
+            ).fetchall()
+        )
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    days = [today - datetime.timedelta(days=i) for i in range(6, -1, -1)]
+    day_counts = [daily.get(d.isoformat(), 0) for d in days]
+    max_day = max(day_counts) or 1
+    day_bars = "".join(
+        f'<div class="col"><div class="barwrap">'
+        f'<div class="barv" style="height:{int(c / max_day * 100)}%"><span>{c}</span></div>'
+        f'</div><div class="xl">{d.strftime("%a")}</div></div>'
+        for d, c in zip(days, day_counts)
+    )
+
+    labels = {
+        "network_issue": "Network issues",
+        "airtime": "Airtime",
+        "support": "Support",
+        "fraud_report": "Fraud reports",
+    }
+    max_kind = max(kinds.values(), default=1) or 1
+    type_bars = "".join(
+        f'<div class="hrow"><div class="hl">{html.escape(labels.get(k, k))}</div>'
+        f'<div class="htrack"><div class="hfill" style="width:{int(n / max_kind * 100)}%"></div></div>'
+        f'<div class="hn">{n}</div></div>'
+        for k, n in sorted(kinds.items(), key=lambda x: -x[1])
+    ) or '<div class="empty">No data yet</div>'
 
     def mask(p):
         return p[:4] + "****" + p[-3:] if p and len(p) > 7 else "****"
@@ -320,6 +371,16 @@ def admin():
 </header>
 <main>
   <div class="cards">{cards}</div>
+  <div class="charts">
+    <div>
+      <h2>Last 7 days</h2>
+      <div class="panel vchart">{day_bars}</div>
+    </div>
+    <div>
+      <h2>Requests by type</h2>
+      <div class="panel hchart">{type_bars}</div>
+    </div>
+  </div>
 
   <h2>By type</h2>
   <div class="panel"><table>
