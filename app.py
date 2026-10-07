@@ -9,6 +9,7 @@ app = Flask(__name__)
 
 africastalking.initialize("sandbox", os.environ["AT_API_KEY"])
 sms = africastalking.SMS
+airtime = africastalking.Airtime
 
 DB_FILE = "mkononi.db"
 
@@ -40,14 +41,18 @@ def init_db():
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE requests ADD COLUMN status TEXT DEFAULT 'ok'")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
-def save_request(prefix, kind, detail, phone):
+def save_request(prefix, kind, detail, phone, status="ok"):
     """Save a request and return its unique reference, e.g. MC1001."""
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.execute(
-            "INSERT INTO requests (kind, detail, phone) VALUES (?, ?, ?)",
-            (kind, detail, phone),
+            "INSERT INTO requests (kind, detail, phone, status) VALUES (?, ?, ?, ?)",
+            (kind, detail, phone, status),
         )
         ref = f"{prefix}{1000 + cur.lastrowid}"
         conn.execute("UPDATE requests SET ref = ? WHERE id = ?", (ref, cur.lastrowid))
@@ -77,6 +82,19 @@ def send_sms(phone, message):
         return sms.send(message, [phone])
     except Exception as e:
         print("SMS failed:", e)
+
+def send_airtime(phone, amount):
+    """Return True only if Africa's Talking reports the airtime as sent."""
+    try:
+        result = airtime.send(
+            phone_number=phone, amount=str(amount), currency_code="KES"
+        )
+        print("Airtime response:", result)
+        responses = result.get("responses", [])
+        return bool(responses) and responses[0].get("status") == "Sent"
+    except Exception as e:
+        print("Airtime failed:", e)
+        return False
 
 
 # ---------------- USSD ----------------
@@ -122,7 +140,7 @@ def ussd():
         else:
             response = "END Invalid choice. Please try again."
 
-    # ---- 2. Buy Airtime ----
+       # ---- 2. Buy Airtime ----
     elif parts[0] == "2":
         if len(parts) == 1:
             response = (
@@ -142,27 +160,33 @@ def ussd():
         elif len(parts) == 3 and parts[1] in AIRTIME_AMOUNTS:
             amount = AIRTIME_AMOUNTS[parts[1]]
             if parts[2] == "1":
-                ref = save_request("AT", "airtime", f"KES {amount}", phone)
-                add_balance(phone, amount)
-                balance = get_balance(phone)
-                send_sms(
-                    phone,
-                    f"Mkononi Connect: KES {amount} airtime received. "
-                    f"Ref: {ref}. New balance: KES {balance}.",
-                )
-                response = (
-                    f"END KES {amount} airtime added.\n"
-                    f"Ref: {ref}\n"
-                    f"New balance: KES {balance}\n"
-                    "A receipt SMS has been sent."
-                )
+                if send_airtime(phone, amount):
+                    ref = save_request("AT", "airtime", f"KES {amount}", phone, "sent")
+                    add_balance(phone, amount)
+                    balance = get_balance(phone)
+                    send_sms(
+                        phone,
+                        f"Mkononi Connect: KES {amount} airtime received. "
+                        f"Ref: {ref}. New balance: KES {balance}.",
+                    )
+                    response = (
+                        f"END KES {amount} airtime sent.\n"
+                        f"Ref: {ref}\n"
+                        f"New balance: KES {balance}\n"
+                        "A receipt SMS has been sent."
+                    )
+                else:
+                    save_request("AT", "airtime", f"KES {amount}", phone, "failed")
+                    response = (
+                        "END Sorry, we could not send your airtime. "
+                        "No airtime was added. Please try again later."
+                    )
             elif parts[2] == "2":
                 response = "END Purchase cancelled."
             else:
                 response = "END Invalid choice. Please try again."
         else:
             response = "END Invalid choice. Please try again."
-
     # ---- 3. Check Balance ----
     elif parts[0] == "3":
         if len(parts) == 1:
@@ -290,7 +314,7 @@ def admin():
             "FROM requests GROUP BY kind, d ORDER BY COUNT(*) DESC"
         ).fetchall()
         recent = conn.execute(
-            "SELECT ref, kind, detail, phone, created_at "
+            "SELECT ref, kind, detail, phone, created_at, status "
             "FROM requests ORDER BY id DESC LIMIT 20"
         ).fetchall()
         balance_total = conn.execute(
@@ -354,9 +378,10 @@ def admin():
         f"<tr><td>{html.escape(str(r))}</td>"
         f'<td><span class="badge">{html.escape(k)}</span></td>'
         f"<td>{html.escape(d or '-')}</td><td>{html.escape(mask(p))}</td>"
-        f"<td>{html.escape(str(t))}</td></tr>"
-        for r, k, d, p, t in recent
-    ) or '<tr><td colspan="5" class="empty">No requests yet</td></tr>'
+        f"<td>{html.escape(str(t))}</td>"
+        f'<td><span class="badge">{html.escape(s or "ok")}</span></td></tr>'
+        for r, k, d, p, t, s in recent
+    ) or '<tr><td colspan="6" class="empty">No requests yet</td></tr>'
 
     return f"""<!DOCTYPE html>
 <html><head>
@@ -390,7 +415,7 @@ def admin():
 
   <h2>Latest 20 requests</h2>
   <div class="panel"><table>
-    <thead><tr><th>Ref</th><th>Kind</th><th>Detail</th><th>Phone</th><th>Time</th></tr></thead>
+    <thead><tr><th>Ref</th><th>Kind</th><th>Detail</th><th>Phone</th><th>Time</th><th>Status</th></thead>
     <tbody>{recent_rows}</tbody>
   </table></div>
 </main>
